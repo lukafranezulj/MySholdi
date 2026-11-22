@@ -1,0 +1,83 @@
+# Web inačica MySholdi
+# - svaki push na main: izgradi web stranicu i objavi je na GitHub Pages (https://<korisnik>.github.io/<repozitorij>/)
+# - uvijek: artefakt "MySholdi-web" s jednom HTML datotekom (MySholdi-offline.html) za korištenje na računalu bez interneta
+# Jednokratno uključi: Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# Ako Pages nije uključen, objava se preskače, a artefakt se svejedno stvara.
+name: Web build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Pronađi projekt (mapu ili ZIP)
+        run: |
+          find_cfg() { find "$1" -name capacitor.config.json -not -path '*/node_modules/*' -not -path '*/android/*' | head -n 1; }
+          CFG=$(find_cfg .)
+          if [ -z "$CFG" ]; then
+            ZIP=$(find . -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -z "$ZIP" ]; then echo "::error::Nije pronađen ni projekt ni ZIP (npr. MySholdi.zip) u repozitoriju."; exit 1; fi
+            mkdir -p "$RUNNER_TEMP/proj" && unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
+            CFG=$(find_cfg "$RUNNER_TEMP/proj")
+          fi
+          P=$(cd "$(dirname "$CFG")" && pwd)
+          echo "PROJECT_DIR=$P" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Izgradnja web inačice
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          node build-web.mjs
+          cp -r web "$RUNNER_TEMP/site"
+
+      - name: Artefakt – samostalna HTML datoteka
+        uses: actions/upload-artifact@v5
+        with:
+          name: MySholdi-web
+          path: |
+            ${{ runner.temp }}/site/MySholdi-offline.html
+
+      - name: Priprema za GitHub Pages
+        id: pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Učitaj stranicu
+        if: steps.pages.outcome == 'success'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+
+    outputs:
+      pages: ${{ steps.pages.outcome }}
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.pages == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Objava na GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
